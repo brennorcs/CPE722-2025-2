@@ -8,7 +8,7 @@
 # -------------------------------------------------------------------
 dataset:
   path: "data/RealWaste"
-  random_seed: 42
+  random_seed: 47
 
 cross_validation:
   n_splits: 10
@@ -32,3 +32,11 @@ training:
   weight_decay: 5e-4
   early_stopping_patience: 15
   scheduler_patience: 5
+
+
+  som:
+  map_size_x: 15          # Largura do mapa SOM
+  map_size_y: 15          # Altura do mapa SOM
+  sigma: 1.5              # Raio inicial de vizinhança
+  learning_rate: 0.0001   # Taxa de aprendizado inicial
+  train_iterations: 10000 # Número de iterações de treinamento

@@ -16,8 +16,6 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
 from minisom import MiniSom
 
-
-
 from modules.Preprocessing.transforms import get_image_transforms
 from modules.Utils.utils import EarlyStopping
 from modules.DataLoader.dataloader import RealWasteDataset
@@ -120,26 +118,23 @@ def extract_features_from_model(model, data_loader, device):
 # =============================================================================
 
 def run_kfold_analysis(config, experiment_dir):
+    # ... (Seção de setup permanece a mesma) ...
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     full_dataset = RealWasteDataset(data_dir=config['dataset']['path'])
     num_classes, class_names = len(full_dataset.classes), full_dataset.classes
     print(f"Dataset carregado com {num_classes} classes.")
-    
     k_folds = config['cross_validation']['n_splits']
     y_labels = [sample[1] for sample in full_dataset.samples]
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=config['dataset']['random_seed'])
-    
-    #Listas para armazenar todas as métricas de cada fold ---
     sup_metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1-score': [], 'specificity': []}
     unsup_metrics = {'accuracy': [], 'precision': [], 'recall': [], 'f1-score': [], 'specificity': []}
 
     for fold, (train_indices, val_indices) in enumerate(skf.split(np.zeros(len(y_labels)), y_labels)):
+        # ... (Loop de treinamento supervisionado) ...
         fold_num = fold + 1
         print(f"\n{'='*20} Fold {fold_num}/{k_folds} {'='*20}")
         fold_dir = os.path.join(experiment_dir, f"fold_{fold_num}")
         os.makedirs(fold_dir, exist_ok=True)
-        
-        
         train_subset, val_subset = Subset(full_dataset, train_indices), Subset(full_dataset, val_indices)
         train_subset.dataset.transform = get_image_transforms(config['model']['image_size'], True)
         val_subset.dataset.transform = get_image_transforms(config['model']['image_size'], False)
@@ -150,53 +145,34 @@ def run_kfold_analysis(config, experiment_dir):
         optimizer = torch.optim.Adam(model.resnet.fc.parameters(), lr=config['training']['learning_rate'], weight_decay=float(config['training']['weight_decay']))
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=config['training']['scheduler_patience'])
         early_stopper = EarlyStopping(patience=config['training']['early_stopping_patience'], verbose=True, path=os.path.join(fold_dir, 'best_model.pth'))
-
         train_loss_history, val_loss_history = [], []
         for epoch in range(config['training']['epochs']):
-            model.train()
-            train_loss = 0.0
+            model.train(); train_loss = 0.0
             pbar_train = tqdm(train_loader, desc=f"Fold {fold_num} Epoch {epoch+1} [Treino]")
             for data, labels in pbar_train:
                 data, labels = data.to(device), labels.to(device)
-                optimizer.zero_grad()
-                outputs = model(data)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item()
-            avg_train_loss = train_loss / len(train_loader)
-            train_loss_history.append(avg_train_loss)
-            model.eval()
-            val_loss = 0.0
+                optimizer.zero_grad(); outputs = model(data); loss = criterion(outputs, labels)
+                loss.backward(); optimizer.step(); train_loss += loss.item()
+            avg_train_loss = train_loss / len(train_loader); train_loss_history.append(avg_train_loss)
+            model.eval(); val_loss = 0.0
             with torch.no_grad():
                 for data, labels in val_loader:
-                    data, labels = data.to(device), labels.to(device)
-                    outputs = model(data)
+                    data, labels = data.to(device), labels.to(device); outputs = model(data)
                     val_loss += criterion(outputs, labels).item()
-            avg_val_loss = val_loss / len(val_loader)
-            val_loss_history.append(avg_val_loss)
-            current_lr = optimizer.param_groups[0]['lr']
-            pbar_train.set_postfix(train_loss=avg_train_loss, val_loss=avg_val_loss, lr=current_lr)
-            scheduler.step(avg_val_loss)
-            early_stopper(avg_val_loss, model)
-            if early_stopper.early_stop:
-                print(f"Early stopping ativado na época {epoch+1}"); break
-        
+            avg_val_loss = val_loss / len(val_loader); val_loss_history.append(avg_val_loss)
+            current_lr = optimizer.param_groups[0]['lr']; pbar_train.set_postfix(train_loss=avg_train_loss, val_loss=avg_val_loss, lr=current_lr)
+            scheduler.step(avg_val_loss); early_stopper(avg_val_loss, model)
+            if early_stopper.early_stop: print(f"Early stopping ativado na época {epoch+1}"); break
         plot_and_save_learning_curves(train_loss_history, val_loss_history, fold_num, fold_dir)
-        
         model.load_state_dict(torch.load(os.path.join(fold_dir, 'best_model.pth')))
         y_true, y_pred = [], []
         with torch.no_grad():
             for data, labels in val_loader:
                 outputs = model(data.to(device)); _, predicted = torch.max(outputs.data, 1)
                 y_true.extend(labels.cpu().numpy()); y_pred.extend(predicted.cpu().numpy())
-        
-        # Coleta de métricas supervisionadas ---
         report_sup = classification_report(y_true, y_pred, target_names=class_names, zero_division=0, output_dict=True)
-        sup_metrics['accuracy'].append(report_sup['accuracy'])
-        sup_metrics['precision'].append(report_sup['macro avg']['precision'])
-        sup_metrics['recall'].append(report_sup['macro avg']['recall'])
-        sup_metrics['f1-score'].append(report_sup['macro avg']['f1-score'])
+        sup_metrics['accuracy'].append(report_sup['accuracy']); sup_metrics['precision'].append(report_sup['macro avg']['precision'])
+        sup_metrics['recall'].append(report_sup['macro avg']['recall']); sup_metrics['f1-score'].append(report_sup['macro avg']['f1-score'])
         sup_metrics['specificity'].append(calculate_macro_specificity(y_true, y_pred, num_classes))
         with open(os.path.join(fold_dir, "classification_report_supervised.json"), 'w') as f: json.dump(report_sup, f, indent=4)
         plot_and_save_confusion_matrix(y_true, y_pred, class_names, "Supervisionado", fold_num, fold_dir)
@@ -204,35 +180,40 @@ def run_kfold_analysis(config, experiment_dir):
         # --- Etapa 2: Análise Não Supervisionada ---
         print(f"\n--- Análise Não Supervisionada (SOM) para o Fold {fold_num} ---")
         features, labels = extract_features_from_model(model, val_loader, device)
-        som = MiniSom(15, 15, features.shape[1], sigma=1.5, learning_rate=0.5, random_seed=42)
-        som.train_random(features, 10000, verbose=True)
+        
+        #Lendo parâmetros do SOM a partir do config ---
+        som_config = config['som']
+        map_size = (som_config['map_size_x'], som_config['map_size_y'])
+        
+        som = MiniSom(map_size[0], map_size[1], 
+                      features.shape[1], 
+                      sigma=som_config['sigma'], 
+                      learning_rate=som_config['learning_rate'],
+                      random_seed=config['dataset']['random_seed'])
+        
+        print("Treinando o SOM...")
+        som.train_random(features, som_config['train_iterations'], verbose=True)
+        # -----------------------------------------------------------------
+
         plot_som_for_fold(som, features, labels, class_names, fold_num, fold_dir)
         winner_coords = np.array([som.winner(x) for x in features]).T
-        cluster_index = np.ravel_multi_index(winner_coords, (15,15))
+        cluster_index = np.ravel_multi_index(winner_coords, map_size)
         report_unsup, spec_unsup = evaluate_unsupervised_with_supervised_metrics(cluster_index, labels, class_names, fold_num, fold_dir)
         
-        # Coleta de métricas não supervisionadas ---
-        unsup_metrics['accuracy'].append(report_unsup['accuracy'])
-        unsup_metrics['precision'].append(report_unsup['macro avg']['precision'])
-        unsup_metrics['recall'].append(report_unsup['macro avg']['recall'])
-        unsup_metrics['f1-score'].append(report_unsup['macro avg']['f1-score'])
+        unsup_metrics['accuracy'].append(report_unsup['accuracy']); unsup_metrics['precision'].append(report_unsup['macro avg']['precision'])
+        unsup_metrics['recall'].append(report_unsup['macro avg']['recall']); unsup_metrics['f1-score'].append(report_unsup['macro avg']['f1-score'])
         unsup_metrics['specificity'].append(spec_unsup)
 
-    # NOVO: Cálculo final de todas as métricas ---
+    
     final_results = {}
     for model_name, metrics_dict in [("resnet_supervised", sup_metrics), ("som_unsupervised", unsup_metrics)]:
-        final_results[model_name] = {}
+        final_results[model_name] = {};
         for metric_name, values in metrics_dict.items():
-            final_results[model_name][f"mean_{metric_name}"] = float(np.mean(values))
-            final_results[model_name][f"std_{metric_name}"] = float(np.std(values))
-    
-    print("\n" + "="*50)
-    print("RESULTADO FINAL DA ANÁLISE COMPARATIVA")
-    print("-" * 50)
+            final_results[model_name][f"mean_{metric_name}"] = float(np.mean(values)); final_results[model_name][f"std_{metric_name}"] = float(np.std(values))
+    print("\n" + "="*50); print("RESULTADO FINAL DA ANÁLISE COMPARATIVA"); print("-" * 50)
     for model_name, results in final_results.items():
-        print(f"Modelo: {model_name}")
-        for metric_name, value in results.items():
-            print(f"  - {metric_name}: {value:.4f}")
+        print(f"Modelo: {model_name}");
+        for metric_name, value in results.items(): print(f"  - {metric_name}: {value:.4f}")
     print("=" * 50)
     
     return final_results
